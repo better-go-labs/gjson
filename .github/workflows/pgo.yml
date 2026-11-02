@@ -1,0 +1,47 @@
+name: pgo
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  profile:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: pgo-profile-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - uses: better-go-labs/pgoctl@feat/profile-store-action
+        with:
+          profile-file: cpu.pprof
+          allow-public-profiles: true
+          on-gate-failure: warn
+
+  build:
+    needs: profile
+    if: always() && (needs.profile.result == 'success' || needs.profile.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: better-go-labs/pgoctl@feat/profile-store-action
+        id: pgo
+        with:
+          profile-mode: restore
+      - run: go build -pgo=${{ steps.pgo.outputs.has-profile == 'true' && 'default.pgo' || 'off' }} ./...
+      - run: |
+          echo "has-profile: ${{ steps.pgo.outputs.has-profile }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "profile-tag: ${{ steps.pgo.outputs.profile-tag }}" >> "$GITHUB_STEP_SUMMARY"
