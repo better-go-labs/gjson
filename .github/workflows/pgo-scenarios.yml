@@ -1,0 +1,661 @@
+name: pgo scenarios
+
+on:
+  workflow_dispatch:
+    inputs:
+      pgoctl-ref:
+        description: 'pgoctl git ref to test'
+        required: true
+        default: 'feat/profile-store-action'
+
+permissions: {}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 1: Action collect + publish to GitHub Releases
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-1-collect-publishes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-1-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - id: pgo
+        uses: ./pgoctl-src
+        with:
+          profile-file: cpu.pprof
+          profile-tag-prefix: ${{ env.PREFIX }}
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+      - name: assert
+        run: |
+          [ "${{ steps.pgo.outputs.has-profile }}" = "true" ] || { echo "expected has-profile=true"; exit 1; }
+          [ -n "${{ steps.pgo.outputs.profile-tag }}" ] || { echo "expected non-empty profile-tag"; exit 1; }
+          gh release list -R "$GITHUB_REPOSITORY" --json tagName --jq '.[].tagName' | grep -E "^${PREFIX}/" || { echo "expected release with prefix $PREFIX"; exit 1; }
+      - name: Clean up this scenario's releases
+        if: always()
+        run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 2: Collect + publish, then restore and build with -pgo=default
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-2-restore-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-2-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - id: pgo-publish
+        uses: ./pgoctl-src
+        with:
+          profile-file: cpu.pprof
+          profile-tag-prefix: ${{ env.PREFIX }}
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+      - id: pgo-restore
+        uses: ./pgoctl-src
+        with:
+          profile-mode: restore
+          profile-tag-prefix: ${{ env.PREFIX }}
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+      - name: assert and build
+        run: |
+          [ "${{ steps.pgo-restore.outputs.has-profile }}" = "true" ] || { echo "expected has-profile=true on restore"; exit 1; }
+          PGO_FLAG="${{ steps.pgo-restore.outputs.has-profile == 'true' && 'default' || 'off' }}"
+          [ "$PGO_FLAG" = "default" ] || { echo "expected PGO_FLAG=default"; exit 1; }
+          go build -pgo=default ./...
+      - name: Clean up this scenario's releases
+        if: always()
+        run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 3: Same-day sequence with quality scores
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-3-same-day-sequence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-3-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - name: Publish two runs same day with different quality scores
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-03-01 --run-id=100-1 --quality-score=0.70 --json
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-03-01 --run-id=200-1 --quality-score=0.90 --json
+      - name: assert
+        run: |
+          gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected sequence .1 release"; exit 1; }
+          /tmp/pgoctl store restore \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --out=restored.pgo --json | grep -q "200-1" || { echo "expected restore to pick higher-score run"; exit 1; }
+          test -s restored.pgo || { echo "restored profile is empty"; exit 1; }
+          gh release view "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected .0 release"; exit 1; }
+      - name: Clean up this scenario's releases
+        if: always()
+        run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 4: Publish on non-default branch does not create release
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-4-no-publish-off-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-4-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - id: pgo
+        uses: ./pgoctl-src
+        with:
+          profile-file: cpu.pprof
+          profile-tag-prefix: ${{ env.PREFIX }}
+          publish-branch: some-other-branch
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+      - name: assert
+        run: |
+          gh release list -R "$GITHUB_REPOSITORY" --json tagName --jq '.[].tagName' | grep -E "^${PREFIX}/" && { echo "should not have published on wrong branch"; exit 1; } || true
+          [ "${{ steps.pgo.outcome }}" = "success" ] || { echo "step should still succeed"; exit 1; }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 5: Artifact store round-trip
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-5-artifact-store:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-5-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Expose the runtime token
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const runtimeToken = process.env.ACTIONS_RUNTIME_TOKEN;
+            const resultsURL = process.env.ACTIONS_RESULTS_URL || 'https://results.github.com';
+            if (!runtimeToken) {
+              core.setFailed('ACTIONS_RUNTIME_TOKEN is not available.');
+              return;
+            }
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', runtimeToken);
+            core.exportVariable('ACTIONS_RESULTS_URL', resultsURL);
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - id: pgo-pub
+        uses: ./pgoctl-src
+        with:
+          profile-file: cpu.pprof
+          profile-tag-prefix: ${{ env.PREFIX }}
+          profile-store: artifact
+          github-token: ${{ github.token }}
+      - id: pgo-restore
+        uses: ./pgoctl-src
+        with:
+          profile-mode: restore
+          profile-tag-prefix: ${{ env.PREFIX }}
+          profile-store: artifact
+          github-token: ${{ github.token }}
+      - name: assert
+        run: |
+          [ "${{ steps.pgo-restore.outputs.has-profile }}" = "true" ] || { echo "expected has-profile=true"; exit 1; }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 6: Exclude runs from window
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-6-exclude-runs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-6-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - name: Publish two runs with CLI
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-04-01 --run-id=100-1 --json
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-04-02 --run-id=200-1 --json
+      - name: Restore with exclude-runs
+        run: |
+          /tmp/pgoctl store restore \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --out=restored.pgo \
+            --exclude-runs="2020-04-01:100-1" --json | grep -v "100-1" || true
+          test -s restored.pgo || { echo "restored profile is empty"; exit 1; }
+      - name: Clean up this scenario's releases
+        if: always()
+        run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 7: Service key isolation
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-7-service-key:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-7-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - name: Publish with different service names
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --service="svc-a" \
+            --profile=cpu.pprof --out=default.pgo --json
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --service="svc-b" \
+            --profile=cpu.pprof --out=default.pgo --json
+      - name: assert
+        run: |
+          /tmp/pgoctl store restore \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --service="svc-a" --out=restored-a.pgo --json
+          test -s restored-a.pgo || { echo "svc-a profile is empty"; exit 1; }
+          /tmp/pgoctl store restore \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --service="svc-b" --out=restored-b.pgo --json
+          test -s restored-b.pgo || { echo "svc-b profile is empty"; exit 1; }
+      - name: Clean up this scenario's releases
+        if: always()
+        run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 8: Prune max-profiles=1 keeps newest
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-8-prune-max1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-8-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - name: Publish two different days
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-04-01 --run-id=100-1 --json
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-04-02 --run-id=200-1 --json
+      - name: Prune to max-profiles=1
+        run: |
+          /tmp/pgoctl store prune \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --today=2020-04-02 --lookback-days=14 --max-profiles=1
+      - name: assert
+        run: |
+          gh release view "$PREFIX/2020-04-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && { echo "prune should have removed 2020-04-01"; exit 1; } || true
+          gh release view "$PREFIX/2020-04-02.0" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "prune should keep 2020-04-02"; exit 1; }
+      - name: Clean up this scenario's releases
+        if: always()
+        run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 9: No source (exit 2)
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-9-no-source-exit2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-9-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - id: pgo
+        uses: ./pgoctl-src
+        with:
+          profile-tag-prefix: ${{ env.PREFIX }}
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+        continue-on-error: true
+      - name: assert
+        run: |
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected step to fail without source"; exit 1; }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 10: Gate fails (warn mode, no publish)
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-10-gate-warn-no-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-10-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - id: pgo
+        uses: ./pgoctl-src
+        with:
+          profile-file: cpu.pprof
+          profile-tag-prefix: ${{ env.PREFIX }}
+          validate-flags: '--min-score 0.99'
+          on-gate-failure: warn
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+      - name: assert
+        run: |
+          [ "${{ steps.pgo.outcome }}" = "success" ] || { echo "expected warn mode to succeed"; exit 1; }
+          gh release list -R "$GITHUB_REPOSITORY" --json tagName --jq '.[].tagName' | grep -E "^${PREFIX}/" && { echo "should not have published"; exit 1; } || true
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 11: Gate fails (fail mode)
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-11-gate-fail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-11-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - id: pgo
+        uses: ./pgoctl-src
+        with:
+          profile-file: cpu.pprof
+          profile-tag-prefix: ${{ env.PREFIX }}
+          validate-flags: '--min-score 0.99'
+          on-gate-failure: fail
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+        continue-on-error: true
+      - name: assert
+        run: |
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected fail mode to fail"; exit 1; }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 12: Denied (contents: read only)
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-12-denied-contents-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-12-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - id: pgo
+        uses: ./pgoctl-src
+        with:
+          profile-file: cpu.pprof
+          profile-tag-prefix: ${{ env.PREFIX }}
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+        continue-on-error: true
+      - name: assert
+        run: |
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected publish to fail without contents: write"; exit 1; }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 13: Restore from empty store returns has-profile=false
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-13-empty-store-off:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-13-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - id: pgo
+        uses: ./pgoctl-src
+        with:
+          profile-mode: restore
+          profile-tag-prefix: ${{ env.PREFIX }}
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+      - name: assert and build
+        run: |
+          [ "${{ steps.pgo.outputs.has-profile }}" = "false" ] || { echo "expected has-profile=false"; exit 1; }
+          PGO_FLAG="${{ steps.pgo.outputs.has-profile == 'true' && 'default' || 'off' }}"
+          [ "$PGO_FLAG" = "off" ] || { echo "expected PGO_FLAG=off"; exit 1; }
+          go build -pgo=off ./...
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 14: Missing profile file
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-14-missing-file:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-14-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - id: pgo
+        uses: ./pgoctl-src
+        with:
+          profile-file: does-not-exist.pprof
+          profile-tag-prefix: ${{ env.PREFIX }}
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+        continue-on-error: true
+      - name: assert
+        run: |
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected failure for missing file"; exit 1; }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 15: Malformed profile (LFS fixture)
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-15-malformed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-15-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - id: pgo
+        uses: ./pgoctl-src
+        with:
+          profile-file: pgoctl-src/testdata/cpu_malformed.pprof
+          profile-tag-prefix: ${{ env.PREFIX }}
+          on-gate-failure: fail
+          allow-public-profiles: true
+          github-token: ${{ github.token }}
+        continue-on-error: true
+      - name: assert
+        run: |
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected failure for malformed profile"; exit 1; }
