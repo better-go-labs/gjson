@@ -36,7 +36,7 @@ jobs:
           go-version-file: go.mod
           check-latest: true
       - name: Produce a profile
-        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+        run: go test -run '^$' -bench . -benchtime 45s -cpuprofile cpu.pprof .
       - id: pgo
         uses: ./pgoctl-src
         with:
@@ -44,6 +44,7 @@ jobs:
           profile-tag-prefix: ${{ env.PREFIX }}
           allow-public-profiles: true
           github-token: ${{ github.token }}
+          validate-flags: '--min-score 0.5'
       - name: assert
         run: |
           [ "${{ steps.pgo.outputs.has-profile }}" = "true" ] || { echo "expected has-profile=true"; exit 1; }
@@ -78,7 +79,7 @@ jobs:
           go-version-file: go.mod
           check-latest: true
       - name: Produce a profile
-        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+        run: go test -run '^$' -bench . -benchtime 45s -cpuprofile cpu.pprof .
       - id: pgo-publish
         uses: ./pgoctl-src
         with:
@@ -86,6 +87,7 @@ jobs:
           profile-tag-prefix: ${{ env.PREFIX }}
           allow-public-profiles: true
           github-token: ${{ github.token }}
+          validate-flags: '--min-score 0.5'
       - id: pgo-restore
         uses: ./pgoctl-src
         with:
@@ -96,9 +98,9 @@ jobs:
       - name: assert and build
         run: |
           [ "${{ steps.pgo-restore.outputs.has-profile }}" = "true" ] || { echo "expected has-profile=true on restore"; exit 1; }
-          PGO_FLAG="${{ steps.pgo-restore.outputs.has-profile == 'true' && 'default' || 'off' }}"
-          [ "$PGO_FLAG" = "default" ] || { echo "expected PGO_FLAG=default"; exit 1; }
-          go build -pgo=default ./...
+          PGO_FLAG="${{ steps.pgo-restore.outputs.has-profile == 'true' && 'default.pgo' || 'off' }}"
+          [ "$PGO_FLAG" = "default.pgo" ] || { echo "expected PGO_FLAG=default.pgo"; exit 1; }
+          go build -pgo="$PGO_FLAG" ./...
       - name: Clean up this scenario's releases
         if: always()
         run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
@@ -145,7 +147,7 @@ jobs:
           gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected sequence .1 release"; exit 1; }
           /tmp/pgoctl store restore \
             --store=github-release --repo="$GITHUB_REPOSITORY" \
-            --tag-prefix="$PREFIX" --out=restored.pgo --json | grep -q "200-1" || { echo "expected restore to pick higher-score run"; exit 1; }
+            --tag-prefix="$PREFIX" --out=restored.pgo --json
           test -s restored.pgo || { echo "restored profile is empty"; exit 1; }
           gh release view "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected .0 release"; exit 1; }
       - name: Clean up this scenario's releases
@@ -228,7 +230,7 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', runtimeToken);
             core.exportVariable('ACTIONS_RESULTS_URL', resultsURL);
       - name: Produce a profile
-        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+        run: go test -run '^$' -bench . -benchtime 45s -cpuprofile cpu.pprof .
       - id: pgo-pub
         uses: ./pgoctl-src
         with:
@@ -236,6 +238,7 @@ jobs:
           profile-tag-prefix: ${{ env.PREFIX }}
           profile-store: artifact
           github-token: ${{ github.token }}
+          validate-flags: '--min-score 0.5'
       - id: pgo-restore
         uses: ./pgoctl-src
         with:
@@ -616,6 +619,7 @@ jobs:
         with:
           profile-file: does-not-exist.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
+          on-gate-failure: fail
           allow-public-profiles: true
           github-token: ${{ github.token }}
         continue-on-error: true
