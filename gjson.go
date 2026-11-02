@@ -2141,7 +2141,7 @@ type parseContext struct {
 	lines bool
 }
 
-// Get searches json for the specified path.
+// Get searches json for the specified path and returns the matching Result.
 // A path is in dot syntax, such as "name.last" or "age".
 // When the value is found it's returned immediately.
 //
