@@ -41,6 +41,7 @@ jobs:
         id: pgo
         with:
           profile-mode: restore
+          allow-public-profiles: true
       - run: go build -pgo=${{ steps.pgo.outputs.has-profile == 'true' && 'default.pgo' || 'off' }} ./...
       - run: |
           echo "has-profile: ${{ steps.pgo.outputs.has-profile }}" >> "$GITHUB_STEP_SUMMARY"
