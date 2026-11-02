@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - run: go test -run '^$' -bench . -benchtime 30s -cpuprofile cpu.pprof .
       - uses: better-go-labs/pgoctl@feat/profile-store-action
         with:
           profile-file: cpu.pprof
