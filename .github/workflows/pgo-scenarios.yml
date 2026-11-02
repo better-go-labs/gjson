@@ -47,6 +47,8 @@ jobs:
           profile-file: cpu.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
           allow-public-profiles: true
+          # the short scenario profile is small on purpose; relax the gate so it still publishes
+          validate-flags: '--min-samples 500 --min-score 0.3'
           github-token: ${{ github.token }}
       - name: assert
         run: |
@@ -93,6 +95,8 @@ jobs:
           profile-file: cpu.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
           allow-public-profiles: true
+          # the short scenario profile is small on purpose; relax the gate so it still publishes
+          validate-flags: '--min-samples 500 --min-score 0.3'
           github-token: ${{ github.token }}
       - id: pgo-restore
         uses: ./pgoctl-src
@@ -104,9 +108,9 @@ jobs:
       - name: assert and build
         run: |
           [ "${{ steps.pgo-restore.outputs.has-profile }}" = "true" ] || { echo "expected has-profile=true on restore"; exit 1; }
-          PGO_FLAG="${{ steps.pgo-restore.outputs.has-profile == 'true' && 'default' || 'off' }}"
-          [ "$PGO_FLAG" = "default" ] || { echo "expected PGO_FLAG=default"; exit 1; }
-          go build -pgo=default ./...
+          PGO_FLAG="${{ steps.pgo-restore.outputs.has-profile == 'true' && 'default.pgo' || 'off' }}"
+          [ "$PGO_FLAG" = "default.pgo" ] || { echo "expected PGO_FLAG=default.pgo"; exit 1; }
+          go build -pgo="$PGO_FLAG" ./...
       - name: Clean up this scenario's releases
         if: always()
         run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
@@ -154,12 +158,12 @@ jobs:
             --today=2020-03-01 --run-id=200-1 --quality-score=0.90 --json
       - name: assert
         run: |
-          gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected sequence .1 release"; exit 1; }
-          /tmp/pgoctl store restore \
-            --store=github-release --repo="$GITHUB_REPOSITORY" \
-            --tag-prefix="$PREFIX" --out=restored.pgo --json | grep -q "200-1" || { echo "expected restore to pick higher-score run"; exit 1; }
-          test -s restored.pgo || { echo "restored profile is empty"; exit 1; }
-          gh release view "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected .0 release"; exit 1; }
+          # no immutable releases: a second same-day publish updates .0 in place (there is no .1)
+          gh release view "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected the .0 release"; exit 1; }
+          if gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "there should be no .1 release"; exit 1; fi
+          gh release download "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" --pattern manifest.json --dir mani --clobber
+          test "$(jq '.runs | length' mani/manifest.json)" = "2" || { echo "expected 2 runs in the .0 manifest"; exit 1; }
+          test "$(jq -r '.daily_run' mani/manifest.json)" = "200-1" || { echo "expected daily_run to be the higher-score run 200-1"; exit 1; }
       - name: Clean up this scenario's releases
         if: always()
         run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
@@ -255,6 +259,8 @@ jobs:
           profile-file: cpu.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
           profile-store: artifact
+          # the short scenario profile is small on purpose; relax the gate so it still publishes
+          validate-flags: '--min-samples 500 --min-score 0.3'
           github-token: ${{ github.token }}
       - id: pgo-restore
         uses: ./pgoctl-src
@@ -308,13 +314,13 @@ jobs:
             --store=github-release --repo="$GITHUB_REPOSITORY" \
             --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
             --today=2020-04-02 --run-id=200-1 --json
-      - name: Restore with exclude-runs
+      - name: Exclude a run and check the manifest marks it excluded
         run: |
-          /tmp/pgoctl store restore \
+          /tmp/pgoctl store exclude \
             --store=github-release --repo="$GITHUB_REPOSITORY" \
-            --tag-prefix="$PREFIX" --out=restored.pgo \
-            --exclude-runs="2020-04-01:100-1" --json | grep -v "100-1" || true
-          test -s restored.pgo || { echo "restored profile is empty"; exit 1; }
+            --tag-prefix="$PREFIX" --pairs="2020-04-01:100-1" --reason="scenario exclude test"
+          gh release download "$PREFIX/2020-04-01.0" --repo "$GITHUB_REPOSITORY" --pattern manifest.json --dir mani --clobber
+          test "$(jq -r '.runs[] | select(.id=="100-1") | .excluded' mani/manifest.json)" = "true" || { echo "expected run 100-1 to be marked excluded: true"; exit 1; }
       - name: Clean up this scenario's releases
         if: always()
         run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
@@ -593,6 +599,8 @@ jobs:
           profile-file: cpu.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
           allow-public-profiles: true
+          # relax the gate so the publish is actually attempted (and then denied by contents: read)
+          validate-flags: '--min-samples 500 --min-score 0.3'
           github-token: ${{ github.token }}
         continue-on-error: true
       - name: assert
@@ -683,6 +691,7 @@ jobs:
         with:
           profile-file: does-not-exist.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
+          on-gate-failure: fail
           allow-public-profiles: true
           github-token: ${{ github.token }}
         continue-on-error: true
