@@ -33,8 +33,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - id: pgo
@@ -75,8 +79,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - id: pgo-publish
@@ -125,8 +133,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - name: Publish two runs same day with different quality scores
@@ -174,8 +186,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - id: pgo
@@ -213,8 +229,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Expose the runtime token
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         with:
@@ -269,8 +289,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - name: Publish two runs with CLI
@@ -317,8 +341,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - name: Publish with different service names
@@ -368,8 +396,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - name: Publish two different days
@@ -418,8 +450,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - id: pgo
         uses: ./pgoctl-src
         with:
@@ -429,7 +465,8 @@ jobs:
         continue-on-error: true
       - name: assert
         run: |
-          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected step to fail without source"; exit 1; }
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected the Action to fail with no source"; exit 1; }
+          /tmp/pgoctl --version >/dev/null || { echo "pgoctl install should have succeeded"; exit 1; }
 
   # ─────────────────────────────────────────────────────────────────────────
   # Scenario 10: Gate fails (warn mode, no publish)
@@ -453,8 +490,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - id: pgo
@@ -493,8 +534,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - id: pgo
@@ -509,7 +554,8 @@ jobs:
         continue-on-error: true
       - name: assert
         run: |
-          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected fail mode to fail"; exit 1; }
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected fail mode to fail the job"; exit 1; }
+          [ -n "${{ steps.pgo.outputs.validate-score }}" ] || { echo "expected a non-empty validate-score"; exit 1; }
 
   # ─────────────────────────────────────────────────────────────────────────
   # Scenario 12: Denied (contents: read only)
@@ -533,8 +579,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - name: Produce a profile
         run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
       - id: pgo
@@ -547,7 +597,16 @@ jobs:
         continue-on-error: true
       - name: assert
         run: |
-          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected publish to fail without contents: write"; exit 1; }
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected the Action publish to fail without contents: write"; exit 1; }
+          set +e
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo --json 2>err.txt
+          code=$?
+          set -e
+          cat err.txt
+          [ "$code" -eq 1 ] || { echo "expected CLI publish exit 1, got $code"; exit 1; }
+          grep -q "contents: write" err.txt || { echo "expected the error to name contents: write"; exit 1; }
 
   # ─────────────────────────────────────────────────────────────────────────
   # Scenario 13: Restore from empty store returns has-profile=false
@@ -571,8 +630,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - id: pgo
         uses: ./pgoctl-src
         with:
@@ -609,8 +672,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - id: pgo
         uses: ./pgoctl-src
         with:
@@ -621,7 +688,9 @@ jobs:
         continue-on-error: true
       - name: assert
         run: |
-          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected failure for missing file"; exit 1; }
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected failure for the missing profile-file"; exit 1; }
+          /tmp/pgoctl --version >/dev/null || { echo "pgoctl install should have succeeded"; exit 1; }
+          [ ! -f does-not-exist.pprof ] || { echo "guard: the fixture should be absent"; exit 1; }
 
   # ─────────────────────────────────────────────────────────────────────────
   # Scenario 15: Malformed profile (LFS fixture)
@@ -645,8 +714,12 @@ jobs:
           lfs: true
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
       - id: pgo
         uses: ./pgoctl-src
         with:
@@ -658,4 +731,5 @@ jobs:
         continue-on-error: true
       - name: assert
         run: |
-          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected failure for malformed profile"; exit 1; }
+          [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected the malformed profile to fail the gate in fail mode"; exit 1; }
+          gh release list -R "$GITHUB_REPOSITORY" --json tagName --jq '.[].tagName' | grep -E "^${PREFIX}/" && { echo "a gate-failed run must not publish a release"; exit 1; } || true
