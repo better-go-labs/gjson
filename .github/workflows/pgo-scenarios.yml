@@ -46,6 +46,8 @@ jobs:
         with:
           profile-file: cpu.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
+          # publish from whatever branch this suite runs on, not just the default branch
+          publish-branch: ${{ github.ref_name }}
           allow-public-profiles: true
           # the short scenario profile is small on purpose; relax the gate so it still publishes
           validate-flags: '--min-samples 500 --min-score 0.3'
@@ -94,6 +96,8 @@ jobs:
         with:
           profile-file: cpu.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
+          # publish from whatever branch this suite runs on, not just the default branch
+          publish-branch: ${{ github.ref_name }}
           allow-public-profiles: true
           # the short scenario profile is small on purpose; relax the gate so it still publishes
           validate-flags: '--min-samples 500 --min-score 0.3'
@@ -172,6 +176,7 @@ jobs:
           test "$(jq '.runs | length' mani/manifest.json)" = "2" || { echo "expected 2 runs in the .1 manifest"; exit 1; }
           test "$(jq -r '.runs[].id' mani/manifest.json | sort | tr '\n' ' ')" = "100-1 200-1 " || { echo "expected .1 manifest to list both runs 100-1 and 200-1"; exit 1; }
           test "$(jq -r '.daily_run' mani/manifest.json)" = "200-1" || { echo "expected daily_run to be the higher-score run 200-1"; exit 1; }
+          jq -r '.supersedes[]' mani/manifest.json | grep -qx "$PREFIX/2020-03-01.0" || { echo "expected .1 manifest supersedes to list the superseded .0 tag"; exit 1; }
       - name: Clean up this scenario's releases
         if: always()
         run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
@@ -266,6 +271,8 @@ jobs:
         with:
           profile-file: cpu.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
+          # publish from whatever branch this suite runs on, not just the default branch
+          publish-branch: ${{ github.ref_name }}
           profile-store: artifact
           # the short scenario profile is small on purpose; relax the gate so it still publishes
           validate-flags: '--min-samples 500 --min-score 0.3'
@@ -330,7 +337,14 @@ jobs:
           /tmp/pgoctl store exclude \
             --store=github-release --repo="$GITHUB_REPOSITORY" \
             --tag-prefix="$PREFIX" --pairs="2020-04-01:100-1" --reason="scenario exclude test"
-          gh release download "$PREFIX/2020-04-01.0" --repo "$GITHUB_REPOSITORY" --pattern manifest.json --dir mani --clobber
+          # Immutable releases: exclude writes the next sequence and prunes the old
+          # one, so resolve the highest published sequence for the date instead of
+          # assuming .0 is still present.
+          seq=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' \
+            | grep "^$PREFIX/2020-04-01\." | sed 's/.*\.//' | sort -n | tail -1)
+          [ -n "$seq" ] || { echo "expected at least one published sequence for 2020-04-01"; exit 1; }
+          echo "highest published sequence for 2020-04-01 is .$seq"
+          gh release download "$PREFIX/2020-04-01.$seq" --repo "$GITHUB_REPOSITORY" --pattern manifest.json --dir mani --clobber
           test "$(jq -r '.runs[] | select(.id=="100-1") | .excluded' mani/manifest.json)" = "true" || { echo "expected run 100-1 to be marked excluded: true"; exit 1; }
       - name: Clean up this scenario's releases
         if: always()
@@ -609,6 +623,8 @@ jobs:
         with:
           profile-file: cpu.pprof
           profile-tag-prefix: ${{ env.PREFIX }}
+          # publish from whatever branch this suite runs on, so the publish is attempted and then denied
+          publish-branch: ${{ github.ref_name }}
           allow-public-profiles: true
           # relax the gate so the publish is actually attempted (and then denied by contents: read)
           validate-flags: '--min-samples 500 --min-score 0.3'
