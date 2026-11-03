@@ -159,11 +159,15 @@ jobs:
       - name: assert
         run: |
           # immutable releases are on: a published .0 cannot be rewritten, so the
-          # second same-day publish opens .1 holding both runs, and .0 still exists.
-          gh release view "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected the .0 release to still exist"; exit 1; }
+          # second same-day publish opens .1 holding both runs. `store publish`
+          # then prunes superseded sequences, so the original .0 is removed and
+          # only the newest sequence (.1) remains.
           gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected a .1 release from the second same-day publish (is immutable releases enabled?)"; exit 1; }
           is_draft=$(gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')
           [ "$is_draft" = "false" ] || { echo "expected .1 to be published, not a draft"; exit 1; }
+          if gh release view "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "expected the superseded .0 to be pruned once .1 was published"; exit 1
+          fi
           gh release download "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" --pattern manifest.json --dir mani --clobber
           test "$(jq '.runs | length' mani/manifest.json)" = "2" || { echo "expected 2 runs in the .1 manifest"; exit 1; }
           test "$(jq -r '.runs[].id' mani/manifest.json | sort | tr '\n' ' ')" = "100-1 200-1 " || { echo "expected .1 manifest to list both runs 100-1 and 200-1"; exit 1; }
@@ -877,12 +881,17 @@ jobs:
             --store=artifact --repo="$GITHUB_REPOSITORY" \
             --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
             --today=2020-03-01 --run-id=200-1 --quality-score=0.90 --json
-      - name: assert both artifacts exist and restore picks .1 with both runs
+      - name: assert the .1 artifact supersedes .0 and restore picks .1 with both runs
         run: |
+          # Published Actions Artifacts are immutable, so the second same-day
+          # publish opens .1 holding both runs. `store publish` prunes superseded
+          # sequences, so the .0 artifact is removed and only .1 remains.
           WIRE="${PREFIX//\//_}"
           names=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts" --jq '.artifacts[] | select(.expired==false) | .name')
-          echo "$names" | grep -qx "${WIRE}_2020-03-01.0" || { echo "expected artifact ${WIRE}_2020-03-01.0"; echo "$names"; exit 1; }
           echo "$names" | grep -qx "${WIRE}_2020-03-01.1" || { echo "expected artifact ${WIRE}_2020-03-01.1"; echo "$names"; exit 1; }
+          if echo "$names" | grep -qx "${WIRE}_2020-03-01.0"; then
+            echo "expected the superseded .0 artifact to be pruned once .1 was published"; echo "$names"; exit 1
+          fi
           /tmp/pgoctl store restore \
             --store=artifact --repo="$GITHUB_REPOSITORY" \
             --tag-prefix="$PREFIX" --out=restored.pgo --json >restore.json
