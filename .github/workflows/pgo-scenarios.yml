@@ -158,11 +158,15 @@ jobs:
             --today=2020-03-01 --run-id=200-1 --quality-score=0.90 --json
       - name: assert
         run: |
-          # no immutable releases: a second same-day publish updates .0 in place (there is no .1)
-          gh release view "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected the .0 release"; exit 1; }
-          if gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "there should be no .1 release"; exit 1; fi
-          gh release download "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" --pattern manifest.json --dir mani --clobber
-          test "$(jq '.runs | length' mani/manifest.json)" = "2" || { echo "expected 2 runs in the .0 manifest"; exit 1; }
+          # immutable releases are on: a published .0 cannot be rewritten, so the
+          # second same-day publish opens .1 holding both runs, and .0 still exists.
+          gh release view "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected the .0 release to still exist"; exit 1; }
+          gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "expected a .1 release from the second same-day publish (is immutable releases enabled?)"; exit 1; }
+          is_draft=$(gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')
+          [ "$is_draft" = "false" ] || { echo "expected .1 to be published, not a draft"; exit 1; }
+          gh release download "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" --pattern manifest.json --dir mani --clobber
+          test "$(jq '.runs | length' mani/manifest.json)" = "2" || { echo "expected 2 runs in the .1 manifest"; exit 1; }
+          test "$(jq -r '.runs[].id' mani/manifest.json | sort | tr '\n' ' ')" = "100-1 200-1 " || { echo "expected .1 manifest to list both runs 100-1 and 200-1"; exit 1; }
           test "$(jq -r '.daily_run' mani/manifest.json)" = "200-1" || { echo "expected daily_run to be the higher-score run 200-1"; exit 1; }
       - name: Clean up this scenario's releases
         if: always()
@@ -272,6 +276,9 @@ jobs:
       - name: assert
         run: |
           [ "${{ steps.pgo-restore.outputs.has-profile }}" = "true" ] || { echo "expected has-profile=true"; exit 1; }
+      - name: Clean up this scenario's artifacts
+        if: always()
+        run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-artifacts.sh" "$PREFIX"'
 
   # ─────────────────────────────────────────────────────────────────────────
   # Scenario 6: Exclude runs from window
@@ -742,3 +749,149 @@ jobs:
         run: |
           [ "${{ steps.pgo.outcome }}" = "failure" ] || { echo "expected the malformed profile to fail the gate in fail mode"; exit 1; }
           gh release list -R "$GITHUB_REPOSITORY" --json tagName --jq '.[].tagName' | grep -E "^${PREFIX}/" && { echo "a gate-failed run must not publish a release"; exit 1; } || true
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 16: Releases store, immutable same-day sequence, restore + prune
+  #
+  # Immutable releases are enabled on this repo, so a published .0 cannot be
+  # rewritten. A second same-day publish opens .1. Restore must pick the highest
+  # published sequence (.1), and prune must drop the superseded .0 while keeping
+  # the protected .1. Uses a unique run-scoped prefix because an immutable tag
+  # can never be reused.
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-16-release-immutable-restore-prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-16-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - name: Publish two runs on one day
+        run: |
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-03-01 --run-id=100-1 --quality-score=0.70 --json
+          /tmp/pgoctl store publish \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-03-01 --run-id=200-1 --quality-score=0.90 --json
+      - name: Restore picks the highest published sequence (.1)
+        run: |
+          /tmp/pgoctl store restore \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --out=restored.pgo --json >restore.json
+          test -s restored.pgo || { echo "restored profile is empty"; exit 1; }
+          tag=$(jq -r '.tag' restore.json)
+          seq=$(jq -r '.sequence' restore.json)
+          echo "restore resolved tag=$tag sequence=$seq"
+          [ "$tag" = "$PREFIX/2020-03-01.1" ] || { echo "expected restore to use the .1 tag, got $tag"; exit 1; }
+          [ "$seq" = "1" ] || { echo "expected restore sequence 1, got $seq"; exit 1; }
+      - name: Prune drops the superseded .0 and keeps .1
+        run: |
+          /tmp/pgoctl store prune \
+            --store=github-release --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --today=2020-03-01 --lookback-days=14 --max-profiles=1
+          if gh release view "$PREFIX/2020-03-01.0" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "prune should have removed the superseded .0"; exit 1
+          fi
+          gh release view "$PREFIX/2020-03-01.1" --repo "$GITHUB_REPOSITORY" >/dev/null \
+            || { echo "prune must keep the protected .1"; exit 1; }
+      - name: Clean up this scenario's releases
+        if: always()
+        run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-releases.sh" "$PREFIX"'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scenario 17: Artifacts store, immutable same-day sequence
+  #
+  # Published Actions Artifacts are always immutable, so a second same-day
+  # publish opens .1 holding both runs. Assert both artifacts exist, that the
+  # .1 manifest lists both runs, and that restore picks .1.
+  # ─────────────────────────────────────────────────────────────────────────
+  scn-17-artifact-immutable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PREFIX: profile/scn-17-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: better-go-labs/pgoctl
+          ref: ${{ inputs.pgoctl-ref }}
+          path: pgoctl-src
+          lfs: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Build pgoctl (confirm toolchain and install)
+        run: |
+          go build -C pgoctl-src -o /tmp/pgoctl ./cmd/pgoctl
+          /tmp/pgoctl --version
+      - name: Expose the runtime token
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const runtimeToken = process.env.ACTIONS_RUNTIME_TOKEN;
+            const resultsURL = process.env.ACTIONS_RESULTS_URL || 'https://results.github.com';
+            if (!runtimeToken) {
+              core.setFailed('ACTIONS_RUNTIME_TOKEN is not available.');
+              return;
+            }
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', runtimeToken);
+            core.exportVariable('ACTIONS_RESULTS_URL', resultsURL);
+      - name: Produce a profile
+        run: go test -run '^$' -bench . -benchtime 2s -cpuprofile cpu.pprof .
+      - name: Publish two runs on one day to the artifact store
+        run: |
+          /tmp/pgoctl store publish \
+            --store=artifact --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-03-01 --run-id=100-1 --quality-score=0.70 --json
+          /tmp/pgoctl store publish \
+            --store=artifact --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --profile=cpu.pprof --out=default.pgo \
+            --today=2020-03-01 --run-id=200-1 --quality-score=0.90 --json
+      - name: assert both artifacts exist and restore picks .1 with both runs
+        run: |
+          WIRE="${PREFIX//\//_}"
+          names=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts" --jq '.artifacts[] | select(.expired==false) | .name')
+          echo "$names" | grep -qx "${WIRE}_2020-03-01.0" || { echo "expected artifact ${WIRE}_2020-03-01.0"; echo "$names"; exit 1; }
+          echo "$names" | grep -qx "${WIRE}_2020-03-01.1" || { echo "expected artifact ${WIRE}_2020-03-01.1"; echo "$names"; exit 1; }
+          /tmp/pgoctl store restore \
+            --store=artifact --repo="$GITHUB_REPOSITORY" \
+            --tag-prefix="$PREFIX" --out=restored.pgo --json >restore.json
+          test -s restored.pgo || { echo "restored profile is empty"; exit 1; }
+          tag=$(jq -r '.tag' restore.json)
+          echo "restore resolved tag=$tag"
+          [ "$tag" = "$PREFIX/2020-03-01.1" ] || { echo "expected restore to use the .1 tag, got $tag"; exit 1; }
+          test "$(jq '.runs | length' restore.json)" = "2" || { echo "expected the .1 manifest to list both runs"; exit 1; }
+          test "$(jq -r '.runs[].id' restore.json | sort | tr '\n' ' ')" = "100-1 200-1 " || { echo "expected the .1 manifest to list runs 100-1 and 200-1"; exit 1; }
+      - name: Clean up this scenario's artifacts
+        if: always()
+        run: '"${{ github.workspace }}/pgoctl-src/hack/store-e2e/cleanup-artifacts.sh" "$PREFIX"'
